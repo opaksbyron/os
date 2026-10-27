@@ -3,14 +3,19 @@ import { expect, type Page, type Response } from '@playwright/test';
 /** Mirrors `productTourMetadataKey()` in components/product-tour/use-tour-completion.ts. */
 export const PRODUCT_TOUR_METADATA_KEY = 'os-product-tour';
 
-const USER_METADATA_PATH = '/api/ibl/users/manage/metadata/';
+// The read moved to the DM proxy; the write still goes to the LMS route.
+const USER_METADATA_READ_PATH = '/api/core/users/metadata/proxy/';
+const USER_METADATA_WRITE_PATH = '/api/ibl/users/manage/metadata/';
 
 export const isUserMetadataResponse = (
   response: Response,
   method: 'GET' | 'POST',
 ): boolean =>
-  response.url().includes(USER_METADATA_PATH) &&
-  response.request().method() === method;
+  response
+    .url()
+    .includes(
+      method === 'GET' ? USER_METADATA_READ_PATH : USER_METADATA_WRITE_PATH,
+    ) && response.request().method() === method;
 
 export type CapturedUserMetadata = {
   url: string;
@@ -19,9 +24,12 @@ export type CapturedUserMetadata = {
 };
 
 /**
- * Remembers the app's own user-metadata GET (URL, auth header, payload). It
- * carries everything a direct call to the same endpoint needs, so no extra
- * host or token configuration is required. Attach before the first navigation.
+ * Remembers the app's own user-metadata GET (URL, auth header, payload).
+ *
+ * This no longer carries what a WRITE needs: the read is served by the DM
+ * proxy under a DM token, while the write still goes to the LMS route under the
+ * edX JWT. `userMetadataWriteTarget` derives the write target from this
+ * capture. Attach before the first navigation.
  */
 export function trackUserMetadata(page: Page) {
   const state: { latest: CapturedUserMetadata | null } = { latest: null };
@@ -65,6 +73,49 @@ export function readTourRecord(
   return metadata.body?.public_metadata?.[PRODUCT_TOUR_METADATA_KEY] ?? null;
 }
 
+/**
+ * Where a direct user-metadata write goes, derived from the observed read.
+ *
+ * Read and write are no longer the same call: the read is `<base>/dm` +
+ * `/api/core/users/metadata/proxy/` with a DM token, the write is `<base>/lms`
+ * + `/api/ibl/users/manage/metadata/` with the edX JWT. Both services sit under
+ * one API base, so the write URL is the read URL with that segment swapped, and
+ * the JWT comes from the session the app has already established.
+ *
+ * Throws rather than guessing when the swap does not apply — without
+ * NEXT_PUBLIC_API_BASE_URL the two services are separate hosts
+ * (`base.manager.<domain>` vs `learn.<domain>`) and no path rewrite is correct.
+ * A silent miss here would strand every journey that depends on the tour being
+ * seeded, so it fails loudly at the point of the mistake.
+ */
+async function userMetadataWriteTarget(
+  page: Page,
+  readUrl: string,
+): Promise<{ url: string; authorization: string }> {
+  const url = new URL(readUrl);
+  const writePathname = url.pathname.replace(
+    `/dm${USER_METADATA_READ_PATH}`,
+    `/lms${USER_METADATA_WRITE_PATH}`,
+  );
+  expect(
+    writePathname,
+    `cannot derive the user-metadata write URL from the observed read (${readUrl}). ` +
+      'It is expected to look like <base>/dm/api/core/users/metadata/proxy/. ' +
+      'If the DM and LMS services are on separate hosts, this helper needs the ' +
+      'LMS base passing in explicitly rather than deriving it.',
+  ).not.toBe(url.pathname);
+  url.pathname = writePathname;
+
+  const jwt = await page.evaluate(() => localStorage.getItem('edx_jwt_token'));
+  expect(
+    jwt,
+    'edx_jwt_token missing from localStorage — the user-metadata write is ' +
+      'authenticated with the edX JWT, not the DM token the read uses',
+  ).toBeTruthy();
+
+  return { url: url.toString(), authorization: `JWT ${jwt}` };
+}
+
 async function writeTourRecord(
   page: Page,
   metadata: CapturedUserMetadata,
@@ -75,10 +126,12 @@ async function writeTourRecord(
     new URL(metadata.url).searchParams.get('username');
   expect(username, 'username missing from the user metadata').toBeTruthy();
 
+  const target = await userMetadataWriteTarget(page, metadata.url);
+
   // The endpoint replaces public_metadata wholesale, so keep the other keys.
-  const response = await page.request.post(metadata.url, {
+  const response = await page.request.post(target.url, {
     headers: {
-      authorization: metadata.authorization,
+      authorization: target.authorization,
       'content-type': 'application/json',
     },
     data: {

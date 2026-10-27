@@ -2,8 +2,8 @@ import { SERVICES } from '@/features/constants';
 
 export const USERS_ENDPOINTS = {
   GET_USER_METADATA: {
-    service: SERVICES.LMS,
-    path: () => `/api/ibl/users/manage/metadata/`,
+    service: SERVICES.DM,
+    path: () => `/api/core/users/metadata/proxy/`,
   },
 };
 

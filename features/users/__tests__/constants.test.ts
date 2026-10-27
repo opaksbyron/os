@@ -10,13 +10,13 @@ describe('users/constants', () => {
   describe('USERS_ENDPOINTS', () => {
     it('should have GET_USER_METADATA endpoint configuration', () => {
       expect(USERS_ENDPOINTS.GET_USER_METADATA).toBeDefined();
-      expect(USERS_ENDPOINTS.GET_USER_METADATA.service).toBe(SERVICES.LMS);
+      expect(USERS_ENDPOINTS.GET_USER_METADATA.service).toBe(SERVICES.DM);
     });
 
     it('should generate correct path for GET_USER_METADATA', () => {
       const path = USERS_ENDPOINTS.GET_USER_METADATA.path();
 
-      expect(path).toBe('/api/ibl/users/manage/metadata/');
+      expect(path).toBe('/api/core/users/metadata/proxy/');
     });
   });
 
